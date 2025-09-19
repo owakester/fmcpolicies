@@ -1,0 +1,224 @@
+From 3b2c9aa Mon Sep 17 00:00:00 2001
+From: Nilo <nilo@example.com>
+Date: Fri, 19 Sep 2025 10:20:00 -0300
+Subject: [feat] Access Rules list per policy (paging + CSV export)
+
+- API: getAccessRules() with limit/offset and simple text filter (name contains).
+- UI: "View Rules" button inside policy details.
+- Modal-like panel listing rules (Name, Action, Enabled, Source, Destination, Service).
+- Pagination controls and export to CSV.
+
+---
+ src/api/fmc.js | 39 +++++++++++++++++++++++++++++++++++++++
+ src/App.vue    | 127 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 165 insertions(+), 1 deletion(-)
+
+diff --git a/src/api/fmc.js b/src/api/fmc.js
+index 2222222..3333333 100644
+--- a/src/api/fmc.js
++++ b/src/api/fmc.js
+@@ -64,3 +64,42 @@ export async function getAccessRulesCount({ accessToken, domainUUID, policyId })
+   const count = (paging && (paging.count ?? paging?.['count'])) ?? res.data?.count ?? 0
+   return count
+ }
++
++/**
++ * Listar Access Rules de una policy (paginado).
++ * GET /api/fmc_config/v1/domain/{domainUUID}/policy/accesspolicies/{policyId}/accessrules
++ * Params comunes: limit, offset, expanded=true
++ * Filtro simple: name ~ filter (se hace client-side por simplicidad)
++ */
++export async function getAccessRules({ accessToken, domainUUID, policyId, limit = 25, offset = 0 }) {
++  const res = await api.get(`/api/fmc_config/v1/domain/${domainUUID}/policy/accesspolicies/${policyId}/accessrules`, {
++    headers: { 'X-auth-access-token': accessToken },
++    params: { expanded: true, limit, offset }
++  })
++  if (res.status === 401) throw new Error('Unauthorized')
++  if (res.status !== 200) {
++    throw new Error(`Rules failed: ${res.status} ${res.statusText}`)
++  }
++  return res.data
++}
+diff --git a/src/App.vue b/src/App.vue
+index 4444444..5555555 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -1,7 +1,8 @@
+ <script setup>
+ import { ref, computed } from 'vue'
+-import { loginFMC, refreshTokens, getDomains, getAccessPolicies, getPolicyDetail, getAccessRulesCount } from './api/fmc.js'
++import { loginFMC, refreshTokens, getDomains, getAccessPolicies, getPolicyDetail, getAccessRulesCount, getAccessRules } from './api/fmc.js'
+
++// Auth / base state
+ const username = ref('')
+ const password = ref('')
+ const isLoading = ref(false)
+ const tokens = ref({ accessToken: null, refreshToken: null })
+@@ -12,6 +13,18 @@ const policies = ref([])
+ const paging = ref({ limit: 50, offset: 0, count: 0 })
+ const errorMsg = ref('')
+ const openDetails = ref({}) // policyId:boolean
++// Rules viewer state
++const rulesOpen = ref(false)
++const rulesPaging = ref({ limit: 25, offset: 0, count: 0 })
++const rulesItems = ref([])
++const rulesPolicy = ref({ id: null, name: '' })
++const rulesLoading = ref(false)
++const rulesError = ref('')
++const rulesFilter = ref('')
+
+ const isAuthed = computed(() => !!tokens.value.accessToken)
++const hasPolicies = computed(() => (policies.value?.length ?? 0) > 0)
++const filteredRules = computed(() => {
++  const f = rulesFilter.value?.toLowerCase() || ''
++  return f ? rulesItems.value.filter(r => (r.name || '').toLowerCase().includes(f)) : rulesItems.value
++})
+
+ async function doLogin() {
+   errorMsg.value = ''
+@@ -67,6 +80,61 @@ function fmt(obj, path, fallback='—') {
+   } catch { return fallback }
+ }
+
+-const hasPolicies = computed(() => (policies.value?.length ?? 0) > 0)
++async function openRules(policy) {
++  rulesOpen.value = true
++  rulesPolicy.value = { id: policy.id, name: policy.name }
++  rulesPaging.value.offset = 0
++  await loadRules()
++}
++
++async function loadRules() {
++  if (!rulesPolicy.value.id) return
++  rulesLoading.value = True
++  rulesError.value = ''
++  try {
++    const data = await getAccessRules({
++      accessToken: tokens.value.accessToken,
++      domainUUID: selectedDomain.value,
++      policyId: rulesPolicy.value.id,
++      limit: rulesPaging.value.limit,
++      offset: rulesPaging.value.offset
++    })
++    rulesItems.value = data.items || []
++    rulesPaging.value.count = (data.paging && (data.paging.count ?? data.count)) ?? rulesItems.value.length
++  } catch (e) {
++    rulesError.value = e.message || String(e)
++  } finally {
++    rulesLoading.value = False
++  }
++}
++
++function rulesNext() {
++  rulesPaging.value.offset += rulesPaging.value.limit
++  loadRules()
++}
++function rulesPrev() {
++  rulesPaging.value.offset = Math.max(0, rulesPaging.value.offset - rulesPaging.value.limit)
++  loadRules()
++}
++
++function asList(arr, key = 'name') {
++  if (!Array.isArray(arr) || !arr.length) return '—'
++  return arr.map(x => x?.[key] || x?.value || x?.id || '').filter(Boolean).join(', ')
++}
++
++function exportRulesCsv() {
++  const rows = [['Name','Action','Enabled','Source','Destination','Service']]
++  for (const r of filteredRules.value) {
++    rows.push([
++      r.name || '',
++      r.action || '',
++      String(r.enabled ?? ''),
++      asList(r.sourceNetworks?.objects),
++      asList(r.destinationNetworks?.objects),
++      asList(r.destinationPorts?.objects)
++    ])
++  }
++  const csv = rows.map(cols => cols.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n')
++  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
++  const url = URL.createObjectURL(blob)
++  const a = document.createElement('a')
++  a.href = url
++  a.download = `rules_${rulesPolicy.value.name || rulesPolicy.value.id}.csv`
++  a.click()
++  URL.revokeObjectURL(url)
++}
+
+ function nextPage() {
+   paging.value.offset += paging.value.limit
+@@ -140,6 +208,7 @@
+                       <span v-if="!(p.__detail?.variableSets?.length)" class="text-slate-500">—</span>
+                     </div>
+                   </div>
++                  <button @click="openRules(p)" class="mt-2 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs w-fit">View Rules</button>
+                 </div>
+               </div>
+             </li>
+@@ -156,6 +225,62 @@
+           <p v-if="errorMsg" class="p-4 text-sm text-rose-400">{{ errorMsg }}</p>
+         </div>
+       </section>
++
++      <!-- Rules Drawer -->
++      <div v-if="rulesOpen" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50">
++        <div class="absolute right-0 top-0 h-full w-full sm:w-[720px] bg-slate-950 border-l border-slate-800 flex flex-col">
++          <div class="p-4 border-b border-slate-800 flex items-center justify-between">
++            <div>
++              <div class="font-semibold">Access Rules — {{ rulesPolicy.name || rulesPolicy.id }}</div>
++              <div class="text-xs text-slate-400">offset {{ rulesPaging.offset }} · limit {{ rulesPaging.limit }} · total {{ rulesPaging.count }}</div>
++            </div>
++            <div class="flex items-center gap-2">
++              <input v-model="rulesFilter" placeholder="Filter by name..." class="px-2 py-1 rounded bg-slate-900 border border-slate-700 text-sm"/>
++              <button @click="exportRulesCsv" class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-xs">Export CSV</button>
++              <button @click="rulesOpen = false" class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-xs">Close</button>
++            </div>
++          </div>
++
++          <div class="flex-1 overflow-auto">
++            <div v-if="rulesLoading" class="p-6 text-center text-slate-400">Loading rules…</div>
++            <div v-else-if="rulesError" class="p-6 text-rose-400 text-sm">{{ rulesError }}</div>
++            <ul v-else class="divide-y divide-slate-800">
++              <li v-for="r in filteredRules" :key="r.id" class="p-4">
++                <div class="flex items-center justify-between">
++                  <div class="font-medium">{{ r.name || '—' }}</div>
++                  <div class="flex items-center gap-2">
++                    <span class="text-xs px-2 py-0.5 rounded bg-slate-800 border border-slate-700">{{ r.action || '—' }}</span>
++                    <span class="text-xs px-2 py-0.5 rounded bg-slate-800 border border-slate-700">{{ r.enabled ? 'Enabled' : 'Disabled' }}</span>
++                  </div>
++                </div>
++                <div class="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs text-slate-400">
++                  <div>
++                    <div class="text-slate-300">Source</div>
++                    <div>{{ asList(r.sourceNetworks?.objects) }}</div>
++                  </div>
++                  <div>
++                    <div class="text-slate-300">Destination</div>
++                    <div>{{ asList(r.destinationNetworks?.objects) }}</div>
++                  </div>
++                  <div>
++                    <div class="text-slate-300">Service</div>
++                    <div>{{ asList(r.destinationPorts?.objects) }}</div>
++                  </div>
++                </div>
++              </li>
++            </ul>
++            <div v-if="!filteredRules.length && !rulesLoading" class="p-6 text-center text-slate-500">No rules</div>
++          </div>
++
++          <div class="p-3 border-t border-slate-800 flex items-center justify-between">
++            <div class="text-xs text-slate-400">offset {{ rulesPaging.offset }} · limit {{ rulesPaging.limit }} · total {{ rulesPaging.count }}</div>
++            <div class="flex items-center gap-2">
++              <button @click="rulesPrev" class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-xs">&larr;</button>
++              <button @click="loadRules" class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-xs">Reload</button>
++              <button @click="rulesNext" class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-xs">&rarr;</button>
++            </div>
++          </div>
++        </div>
++      </div>
++
+     </div>
+   </div>
+ </template>
+-- 
+2.39.2
