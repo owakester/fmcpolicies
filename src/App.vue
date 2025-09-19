@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { loginFMC, refreshTokens, getDomains, getAccessPolicies } from './api/fmc.js'
+import { loginFMC, refreshTokens, getDomains, getAccessPolicies, getAccessRules } from './api/fmc.js'
 
 const username = ref('')
 const password = ref('')
@@ -11,6 +11,8 @@ const selectedDomain = ref('')
 const policies = ref([])
 const paging = ref({ limit: 50, offset: 0, count: 0 })
 const errorMsg = ref('')
+const selectedPolicy = ref(null)
+const rules = ref([])
 
 const isAuthed = computed(() => !!tokens.value.accessToken)
 
@@ -34,6 +36,8 @@ async function loadPolicies() {
   if (!selectedDomain.value) return
   isLoading.value = true
   errorMsg.value = ''
+  selectedPolicy.value = null
+  rules.value = []
   try {
     const data = await getAccessPolicies({
       accessToken: tokens.value.accessToken,
@@ -61,6 +65,25 @@ async function loadPolicies() {
     } else {
       errorMsg.value = e.message || String(e)
     }
+  } finally {
+    isLoading.value = false
+  }
+}
+
+async function showRules(policy) {
+  selectedPolicy.value = policy
+  rules.value = []
+  isLoading.value = true
+  errorMsg.value = ''
+  try {
+    const data = await getAccessRules({
+      accessToken: tokens.value.accessToken,
+      domainUUID: selectedDomain.value,
+      policyId: policy.id
+    })
+    rules.value = data.items || []
+  } catch (e) {
+    errorMsg.value = e.message || String(e)
   } finally {
     isLoading.value = false
   }
@@ -132,7 +155,7 @@ function prevPage() {
           </div>
 
           <ul class="divide-y divide-slate-800">
-            <li v-for="p in policies" :key="p.id" class="p-4 hover:bg-slate-900">
+            <li v-for="p in policies" :key="p.id" class="p-4 hover:bg-slate-900 cursor-pointer" @click="showRules(p)">
               <div class="flex items-center justify-between">
                 <div>
                   <div class="font-medium">{{ p.name }}</div>
@@ -151,6 +174,20 @@ function prevPage() {
             Cargando...
           </div>
           <p v-if="errorMsg" class="p-4 text-sm text-rose-400">{{ errorMsg }}</p>
+        </div>
+
+        <div v-if="selectedPolicy" class="bg-slate-900/50 border border-slate-800 rounded-2xl">
+          <div class="p-4 border-b border-slate-800">
+            <h3 class="font-semibold">Rules for: {{ selectedPolicy.name }} ({{ rules.length }})</h3>
+          </div>
+          <ul class="divide-y divide-slate-800">
+            <li v-for="r in rules" :key="r.id" class="p-4">
+              <div class="font-medium">{{ r.name }}</div>
+              <div class="text-xs text-slate-400">
+                Action: {{ r.action }} · Enabled: {{ r.enabled }}
+              </div>
+            </li>
+          </ul>
         </div>
       </section>
     </div>

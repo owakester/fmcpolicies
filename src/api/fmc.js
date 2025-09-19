@@ -55,3 +55,15 @@ export async function getAccessPolicies({ accessToken, domainUUID, limit = 50, o
   }
   return res.data
 }
+
+export async function getAccessRules({ accessToken, domainUUID, policyId }) {
+  const res = await api.get(`/api/fmc_config/v1/domain/${domainUUID}/policy/accesspolicies/${policyId}/accessrules`, {
+    headers: { 'X-auth-access-token': accessToken },
+    params: { expanded: true, limit: 1000 } // O ajusta el límite según sea necesario
+  });
+  if (res.status === 401) throw new Error('Unauthorized');
+  if (res.status !== 200) {
+    throw new Error(`Access rules failed: ${res.status} ${res.statusText}`);
+  }
+  return res.data;
+}
