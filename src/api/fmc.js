@@ -114,3 +114,22 @@ export async function getAccessRules({ accessToken, domainUUID, policyId, limit 
   }
   return res.data
 }
+
+/**
+ * Access Rule detail (usa links.self si viene, si no construye la URL)
+ */
+export async function getRuleDetail({ accessToken, domainUUID, policyId, rule }) {
+  const selfHref = rule?.links?.self
+  const url = selfHref
+    ? selfHref.replace('https://fmcrestapisandbox.cisco.com', '')
+    : `/api/fmc_config/v1/domain/${encodeURIComponent(domainUUID)}/policy/accesspolicies/${encodeURIComponent(policyId)}/accessrules/${encodeURIComponent(rule.id)}`
+
+  const res = await api.get(url, {
+    headers: { 'X-auth-access-token': accessToken }
+  })
+  if (res.status === 401) throw new Error('Unauthorized')
+  if (res.status !== 200) {
+    throw new Error(`Rule detail failed: ${res.status} ${res.statusText}`)
+  }
+  return res.data
+}

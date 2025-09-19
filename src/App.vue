@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import {
   loginFMC, refreshTokens, getDomains, getAccessPolicies,
-  getPolicyDetail, getAccessRulesCount, getAccessRules
+  getPolicyDetail, getAccessRulesCount, getAccessRules, getRuleDetail
 } from './api/fmc.js'
 
 // --- Auth / base state ---
@@ -25,6 +25,11 @@ const rulesPolicy = ref({ id: null, name: '' })
 const rulesLoading = ref(false)
 const rulesError = ref('')
 const rulesFilter = ref('')
+
+// --- Rule detail cache/state ---
+const ruleDetails = ref({})       // { [ruleId]: object }
+const ruleDetailError = ref({})   // { [ruleId]: string }
+const ruleDetailLoading = ref({}) // { [ruleId]: boolean }
 
 const isAuthed = computed(() => !!tokens.value.accessToken)
 const hasPolicies = computed(() => (policies.value?.length ?? 0) > 0)
@@ -123,6 +128,9 @@ async function openRules(policy) {
   rulesOpen.value = true
   rulesPolicy.value = { id: policy.id, name: policy.name }
   rulesPaging.value.offset = 0
+  ruleDetails.value = {}
+  ruleDetailError.value = {}
+  ruleDetailLoading.value = {}
   await loadRules()
 }
 
@@ -181,6 +189,26 @@ function exportRulesCsv() {
   a.download = `rules_${rulesPolicy.value.name || rulesPolicy.value.id}.csv`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+// --- Rule detail on-demand (evita 400 usando links.self) ---
+async function loadRuleDetail(r) {
+  if (!r?.id) return
+  ruleDetailError.value[r.id] = ''
+  ruleDetailLoading.value[r.id] = true
+  try {
+    const data = await getRuleDetail({
+      accessToken: tokens.value.accessToken,
+      domainUUID: selectedDomain.value,
+      policyId: rulesPolicy.value.id,
+      rule: r
+    })
+    ruleDetails.value[r.id] = data
+  } catch (e) {
+    ruleDetailError.value[r.id] = e.message || String(e)
+  } finally {
+    ruleDetailLoading.value[r.id] = false
+  }
 }
 
 function nextPage() {
@@ -338,6 +366,8 @@ function prevPage() {
                     <span class="text-xs px-2 py-0.5 rounded bg-slate-800 border border-slate-700">{{ r.enabled ? 'Enabled' : 'Disabled' }}</span>
                   </div>
                 </div>
+
+                <!-- Source / Destination / Service -->
                 <div class="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs text-slate-400">
                   <div>
                     <div class="text-slate-300">Source</div>
@@ -350,6 +380,66 @@ function prevPage() {
                   <div>
                     <div class="text-slate-300">Service</div>
                     <div>{{ asList(r.destinationPorts?.objects) }}</div>
+                  </div>
+                </div>
+
+                <!-- Metadatos y comentarios (si la API los trae) -->
+                <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs text-slate-400">
+                  <div>
+                    <div class="text-slate-300">Last Modified</div>
+                    <div>{{ r.metadata?.lastModifiedTime || '—' }}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-300">Last User</div>
+                    <div>{{ r.metadata?.lastUser || '—' }}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-300">Comments</div>
+                    <div>
+                      <template v-if="Array.isArray(r.commentHistory) && r.commentHistory.length">
+                        <ul class="list-disc ml-4">
+                          <li v-for="(c, idx) in r.commentHistory" :key="idx">
+                            {{ c.comment || c.text }} — {{ c.user || c.username || '' }} {{ c.date || c.time || '' }}
+                          </li>
+                        </ul>
+                      </template>
+                      <template v-else-if="Array.isArray(r.comments) && r.comments.length">
+                        <ul class="list-disc ml-4">
+                          <li v-for="(c, idx) in r.comments" :key="idx">
+                            {{ c.comment || c.text || c }}
+                          </li>
+                        </ul>
+                      </template>
+                      <template v-else-if="r.metadata?.comments">
+                        {{ r.metadata.comments }}
+                      </template>
+                      <span v-else>—</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- acciones / detalle -->
+                <div class="mt-3 flex items-center gap-2">
+                  <button @click="loadRuleDetail(r)" class="px-2 py-1 text-xs rounded bg-slate-800 border border-slate-700">
+                    View detail
+                  </button>
+                  <span v-if="ruleDetailLoading[r.id]" class="text-xs text-slate-400">Loading…</span>
+                  <span v-else-if="ruleDetailError[r.id]" class="text-xs text-rose-400">{{ ruleDetailError[r.id] }}</span>
+                </div>
+
+                <!-- detalle de la regla -->
+                <div v-if="ruleDetails[r.id]" class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs text-slate-400 p-3 rounded border border-slate-800 bg-slate-900/60">
+                  <div>
+                    <div class="text-slate-300">Log Setting</div>
+                    <div>{{ (ruleDetails[r.id].logFiles || ruleDetails[r.id].logBegin || ruleDetails[r.id].logEnd) ? 'Enabled' : '—' }}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-300">IPS Policy</div>
+                    <div>{{ ruleDetails[r.id]?.ipsPolicy?.name || '—' }}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-300">Time Range</div>
+                    <div>{{ ruleDetails[r.id]?.timeRange?.name || '—' }}</div>
                   </div>
                 </div>
               </li>
